@@ -224,7 +224,6 @@ void performAction(CarStatus& car_status, bool car_in_front, const std::vector<s
 		double straight_cost = std::abs(TARGET_VELOCITY_MPH - car_status.desired_velocity_mph) * SPEED_COST + std::abs(car_status.lane - DESIRED_LANE) * LANE_COST;
 		actions.push_back(PathPlannerAction(0, straight_cost));
 
-		//std::cout << "Straight: " << straight_cost;
 		int time_since_last_last_change = std::chrono::duration_cast<milliseconds>(Clock::now() - car_status.last_lane_change).count();
 
 		if (time_since_last_last_change > TIME_UNTIL_NEXT_LANE_CHANGE_MS && (car_status.lane != DESIRED_LANE || car_in_front)) {
@@ -232,16 +231,13 @@ void performAction(CarStatus& car_status, bool car_in_front, const std::vector<s
 				double lane_change_left_cost = std::abs((car_status.lane - 1) - DESIRED_LANE) * LANE_COST + info_left->adjacent_car_delta_speed * SPEED_COST;
 				actions.push_back(PathPlannerAction(-1, lane_change_left_cost));
 				delete info_left;
-				//std::cout << "  -  Left: " << lane_change_left_cost;
 			}
 			if (info_right != nullptr) {
 				double lane_change_right_cost = std::abs((car_status.lane + 1) - DESIRED_LANE) * LANE_COST + info_right->adjacent_car_delta_speed * SPEED_COST;
 				actions.push_back(PathPlannerAction(1, lane_change_right_cost));
 				delete info_right;
-				//std::cout << "  -  Right: " << lane_change_right_cost;
 			}
 		}
-		//std::cout << std::endl;
 
 		std::sort(actions.begin(), actions.end());
 		PathPlannerAction desired_action = actions[0];
