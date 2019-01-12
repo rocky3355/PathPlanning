@@ -8,8 +8,10 @@
 #include "Eigen-3.3/Eigen/Core"
 #include "Eigen-3.3/Eigen/QR"
 #include "json.hpp"
-
-using namespace std;
+#include "CarStatus.hpp"
+#include "LaneChangeInfo.hpp"
+#include "Parameters.h"
+#include "spline.h"
 
 // for convenience
 using json = nlohmann::json;
@@ -19,16 +21,23 @@ constexpr double pi() { return M_PI; }
 double deg2rad(double x) { return x * pi() / 180; }
 double rad2deg(double x) { return x * 180 / pi(); }
 
+  // Load up map values for waypoint's x,y,s and d normalized normal std::vectors
+  std::vector<double> map_waypoints_x;
+  std::vector<double> map_waypoints_y;
+  std::vector<double> map_waypoints_s;
+  std::vector<double> map_waypoints_dx;
+  std::vector<double> map_waypoints_dy;
+
 // Checks if the SocketIO event has JSON data.
 // If there is data the JSON object in string format will be returned,
 // else the empty string "" will be returned.
-string hasData(string s) {
+std::string hasData(std::string s) {
   auto found_null = s.find("null");
   auto b1 = s.find_first_of("[");
   auto b2 = s.find_first_of("}");
-  if (found_null != string::npos) {
+  if (found_null != std::string::npos) {
     return "";
-  } else if (b1 != string::npos && b2 != string::npos) {
+  } else if (b1 != std::string::npos && b2 != std::string::npos) {
     return s.substr(b1, b2 - b1 + 2);
   }
   return "";
@@ -38,16 +47,17 @@ double distance(double x1, double y1, double x2, double y2)
 {
 	return sqrt((x2-x1)*(x2-x1)+(y2-y1)*(y2-y1));
 }
-int ClosestWaypoint(double x, double y, const vector<double> &maps_x, const vector<double> &maps_y)
+
+int ClosestWaypoint(double x, double y)
 {
 
 	double closestLen = 100000; //large number
 	int closestWaypoint = 0;
 
-	for(int i = 0; i < maps_x.size(); i++)
+	for(int i = 0; i < map_waypoints_x.size(); i++)
 	{
-		double map_x = maps_x[i];
-		double map_y = maps_y[i];
+		double map_x = map_waypoints_x[i];
+		double map_y = map_waypoints_y[i];
 		double dist = distance(x,y,map_x,map_y);
 		if(dist < closestLen)
 		{
@@ -58,26 +68,25 @@ int ClosestWaypoint(double x, double y, const vector<double> &maps_x, const vect
 	}
 
 	return closestWaypoint;
-
 }
 
-int NextWaypoint(double x, double y, double theta, const vector<double> &maps_x, const vector<double> &maps_y)
+int NextWaypoint(double x, double y, double theta)
 {
 
-	int closestWaypoint = ClosestWaypoint(x,y,maps_x,maps_y);
+	int closestWaypoint = ClosestWaypoint(x, y);
 
-	double map_x = maps_x[closestWaypoint];
-	double map_y = maps_y[closestWaypoint];
+	double map_x = map_waypoints_x[closestWaypoint];
+	double map_y = map_waypoints_y[closestWaypoint];
 
-	double heading = atan2((map_y-y),(map_x-x));
+	double heading = std::atan2((map_y-y),(map_x-x));
 
-	double angle = fabs(theta-heading);
-  angle = min(2*pi() - angle, angle);
+	double angle = std::fabs(theta-heading);
+  angle = std::min(2*pi() - angle, angle);
 
   if(angle > pi()/4)
   {
     closestWaypoint++;
-  if (closestWaypoint == maps_x.size())
+  if (closestWaypoint == map_waypoints_x.size())
   {
     closestWaypoint = 0;
   }
@@ -87,21 +96,21 @@ int NextWaypoint(double x, double y, double theta, const vector<double> &maps_x,
 }
 
 // Transform from Cartesian x,y coordinates to Frenet s,d coordinates
-vector<double> getFrenet(double x, double y, double theta, const vector<double> &maps_x, const vector<double> &maps_y)
+std::vector<double> getFrenet(double x, double y, double theta)
 {
-	int next_wp = NextWaypoint(x,y, theta, maps_x,maps_y);
+	int next_wp = NextWaypoint(x, y, theta);
 
 	int prev_wp;
 	prev_wp = next_wp-1;
 	if(next_wp == 0)
 	{
-		prev_wp  = maps_x.size()-1;
+		prev_wp  = map_waypoints_x.size()-1;
 	}
 
-	double n_x = maps_x[next_wp]-maps_x[prev_wp];
-	double n_y = maps_y[next_wp]-maps_y[prev_wp];
-	double x_x = x - maps_x[prev_wp];
-	double x_y = y - maps_y[prev_wp];
+	double n_x = map_waypoints_x[next_wp]-map_waypoints_x[prev_wp];
+	double n_y = map_waypoints_y[next_wp]-map_waypoints_y[prev_wp];
+	double x_x = x - map_waypoints_x[prev_wp];
+	double x_y = y - map_waypoints_y[prev_wp];
 
 	// find the projection of x onto n
 	double proj_norm = (x_x*n_x+x_y*n_y)/(n_x*n_x+n_y*n_y);
@@ -112,8 +121,8 @@ vector<double> getFrenet(double x, double y, double theta, const vector<double> 
 
 	//see if d value is positive or negative by comparing it to a center point
 
-	double center_x = 1000-maps_x[prev_wp];
-	double center_y = 2000-maps_y[prev_wp];
+	double center_x = 1000-map_waypoints_x[prev_wp];
+	double center_y = 2000-map_waypoints_y[prev_wp];
 	double centerToPos = distance(center_x,center_y,x_x,x_y);
 	double centerToRef = distance(center_x,center_y,proj_x,proj_y);
 
@@ -126,7 +135,7 @@ vector<double> getFrenet(double x, double y, double theta, const vector<double> 
 	double frenet_s = 0;
 	for(int i = 0; i < prev_wp; i++)
 	{
-		frenet_s += distance(maps_x[i],maps_y[i],maps_x[i+1],maps_y[i+1]);
+		frenet_s += distance(map_waypoints_x[i],map_waypoints_y[i],map_waypoints_x[i+1],map_waypoints_y[i+1]);
 	}
 
 	frenet_s += distance(0,0,proj_x,proj_y);
@@ -136,53 +145,237 @@ vector<double> getFrenet(double x, double y, double theta, const vector<double> 
 }
 
 // Transform from Frenet s,d coordinates to Cartesian x,y
-vector<double> getXY(double s, double d, const vector<double> &maps_s, const vector<double> &maps_x, const vector<double> &maps_y)
+std::vector<double> getXY(double s, double d)
 {
 	int prev_wp = -1;
 
-	while(s > maps_s[prev_wp+1] && (prev_wp < (int)(maps_s.size()-1) ))
+	while(s > map_waypoints_s[prev_wp+1] && (prev_wp < (int)(map_waypoints_s.size()-1) ))
 	{
 		prev_wp++;
 	}
 
-	int wp2 = (prev_wp+1)%maps_x.size();
+	int wp2 = (prev_wp+1)%map_waypoints_x.size();
 
-	double heading = atan2((maps_y[wp2]-maps_y[prev_wp]),(maps_x[wp2]-maps_x[prev_wp]));
+	double heading = std::atan2((map_waypoints_y[wp2]-map_waypoints_y[prev_wp]),(map_waypoints_x[wp2]-map_waypoints_x[prev_wp]));
 	// the x,y,s along the segment
-	double seg_s = (s-maps_s[prev_wp]);
+	double seg_s = (s-map_waypoints_s[prev_wp]);
 
-	double seg_x = maps_x[prev_wp]+seg_s*cos(heading);
-	double seg_y = maps_y[prev_wp]+seg_s*sin(heading);
+	double seg_x = map_waypoints_x[prev_wp]+seg_s * std::cos(heading);
+	double seg_y = map_waypoints_y[prev_wp]+seg_s * std::sin(heading);
 
 	double perp_heading = heading-pi()/2;
 
-	double x = seg_x + d*cos(perp_heading);
-	double y = seg_y + d*sin(perp_heading);
+	double x = seg_x + d * std::cos(perp_heading);
+	double y = seg_y + d * std::sin(perp_heading);
 
 	return {x,y};
+}
 
+double getCenterOfLane(int lane) {
+	double center = lane * LANE_WIDTH + LANE_WIDTH / 2;
+	return center;
+}
+
+LaneChangeInfo* checkCarsOnAdjacentLane(int lane_shift, const CarStatus& car_status, const std::vector<std::vector<double>>& sensor_fusion) {
+	int target_lane = car_status.lane + lane_shift;
+	if (target_lane < MIN_LANE || target_lane > MAX_LANE) {
+		return nullptr;
+	}
+
+	int nearest_car_idx = -1;
+	double lowest_distance = ADJECENT_MAX_DISTANCE_FOR_CONSIDERATION;
+
+	for (int i = 0; i < sensor_fusion.size(); i++) {
+		double s = sensor_fusion[i][5];
+		double d = sensor_fusion[i][6];
+		double longitudinal_distance = s - car_status.s;
+
+		if (d > target_lane * LANE_WIDTH && d < (target_lane + 1) * LANE_WIDTH) {
+			double free_space = std::abs(longitudinal_distance);
+			if (free_space < MIN_FREE_SPACE_LANE_CHANGE) {
+				return nullptr;
+			}
+
+			if (longitudinal_distance > 0 && longitudinal_distance < lowest_distance) {
+				nearest_car_idx = i;
+				lowest_distance = longitudinal_distance;
+			}
+		}
+	}
+
+	double delta_v = 0;
+	if (nearest_car_idx > -1) {
+		double vx = sensor_fusion[nearest_car_idx][3];
+		double vy = sensor_fusion[nearest_car_idx][4];
+		double v = std::sqrt(vx * vx + vy * vy) * MS_TO_MPH;
+		delta_v = TARGET_VELOCITY_MPH - v;
+	}
+
+	LaneChangeInfo* info = new LaneChangeInfo(delta_v);
+	return info;
+}
+
+void performAction(CarStatus& car_status, bool car_in_front, const std::vector<std::vector<double>>& sensor_fusion) {
+	if (car_status.current_action == nullptr) {
+		LaneChangeInfo* info_left = checkCarsOnAdjacentLane(-1, car_status, sensor_fusion);
+		LaneChangeInfo* info_right = checkCarsOnAdjacentLane(1, car_status, sensor_fusion);
+
+		std::vector<PathPlannerAction> actions;
+		double straight_cost = std::abs(TARGET_VELOCITY_MPH - car_status.desired_velocity_mph) * SPEED_COST + std::abs(car_status.lane - DESIRED_LANE) * LANE_COST;
+		actions.push_back(PathPlannerAction(0, straight_cost));
+
+		//std::cout << "Straight: " << straight_cost;
+		int time_since_last_last_change = std::chrono::duration_cast<milliseconds>(Clock::now() - car_status.last_lane_change).count();
+
+		if (time_since_last_last_change > TIME_UNTIL_NEXT_LANE_CHANGE_MS && (car_status.lane != DESIRED_LANE || car_in_front)) {
+			if (info_left != nullptr) {
+				double lane_change_left_cost = std::abs((car_status.lane - 1) - DESIRED_LANE) * LANE_COST + info_left->adjacent_car_delta_speed * SPEED_COST;
+				actions.push_back(PathPlannerAction(-1, lane_change_left_cost));
+				delete info_left;
+				//std::cout << "  -  Left: " << lane_change_left_cost;
+			}
+			if (info_right != nullptr) {
+				double lane_change_right_cost = std::abs((car_status.lane + 1) - DESIRED_LANE) * LANE_COST + info_right->adjacent_car_delta_speed * SPEED_COST;
+				actions.push_back(PathPlannerAction(1, lane_change_right_cost));
+				delete info_right;
+				//std::cout << "  -  Right: " << lane_change_right_cost;
+			}
+		}
+		//std::cout << std::endl;
+
+		std::sort(actions.begin(), actions.end());
+		PathPlannerAction desired_action = actions[0];
+		car_status.lane += desired_action.lane_shift;
+
+		if (desired_action.lane_shift != 0) {
+			car_status.current_action = new PathPlannerAction(desired_action.lane_shift, desired_action.cost);
+		}
+	}
+	else {
+		if (car_status.d > car_status.lane * LANE_WIDTH && car_status.d < (car_status.lane + 1) * LANE_WIDTH) {
+			delete car_status.current_action;
+			car_status.current_action = nullptr;
+			car_status.last_lane_change = Clock::now();
+		}
+	}
+}
+
+double getBrakingValue(const CarStatus& car_status, const std::vector<std::vector<double>>& sensor_fusion) {
+	for (int i = 0; i < sensor_fusion.size(); i++) {
+		double vx = sensor_fusion[i][3];
+		double vy = sensor_fusion[i][4];
+		double s = sensor_fusion[i][5];
+		double d = sensor_fusion[i][6];
+
+		if (d > car_status.lane * LANE_WIDTH && d < (car_status.lane + 1) * LANE_WIDTH) {
+			double distance = s - car_status.s;
+			double distance_threshold = car_status.speed / 1.2;
+
+			if (s > car_status.s && distance < distance_threshold) {
+					double distance_violation = distance_threshold - distance;
+					double car_vel_mph = std::sqrt(vx * vx + vy * vy) * MS_TO_MPH;
+					double speed_diff = car_status.desired_velocity_mph - car_vel_mph;
+					double brake_value = speed_diff * BRAKE_SPEED_FACTOR + distance_violation * BRAKE_DIST_FACTOR;
+					return brake_value;
+			}
+		}
+	}
+
+	return 0.0;
+}
+
+void calculateNextPoints(const CarStatus& car_status, const std::vector<double>& previous_path_x, const std::vector<double>& previous_path_y,
+												std::vector<double>& next_x_vals, std::vector<double>& next_y_vals) {
+
+	double desired_velocity_ms = car_status.desired_velocity_mph * MPH_TO_MS;
+
+	double smooth_step = desired_velocity_ms * TIME_TO_REACH_POINT;
+	std::vector<double> rough_x(NUMBER_OF_ROUGH_POINTS);
+	std::vector<double> rough_y(NUMBER_OF_ROUGH_POINTS);
+	int prev_size = previous_path_x.size();
+
+	double ref_x = car_status.x;
+	double ref_y = car_status.y;
+	double ref_yaw = deg2rad(car_status.yaw);
+
+	if (prev_size < 2) {
+		double prev_car_x = car_status.x - std::cos(car_status.yaw);
+		double prev_car_y = car_status.y - std::sin(car_status.yaw);
+		rough_x[0] = prev_car_x;
+		rough_x[1] = car_status.x;
+		rough_y[0] = prev_car_y;
+		rough_y[1] = car_status.y;
+	}
+	else {
+		ref_x = previous_path_x[prev_size - 1];
+		ref_y = previous_path_y[prev_size - 1];
+		double ref_x_prev = previous_path_x[prev_size - 2];
+		double ref_y_prev = previous_path_y[prev_size - 2];
+		ref_yaw = std::atan2(ref_y - ref_y_prev, ref_x - ref_x_prev);
+
+		rough_x[0] = ref_x_prev;
+		rough_x[1] = ref_x;
+		rough_y[0] = ref_y_prev;
+		rough_y[1] = ref_y;
+	}
+
+	for (int i = 2; i < NUMBER_OF_ROUGH_POINTS; i++) {
+		double next_s = car_status.s + (i - 1) * ROUGH_STEP_SIZE * (car_status.current_action == nullptr ? 1.0 : LANE_CHANGE_ROUGH_STEP_SIZE_FACTOR);
+		double next_d = getCenterOfLane(car_status.lane);
+		std::vector<double> xy = getXY(next_s, next_d);
+		rough_x[i] = xy[0];
+		rough_y[i] = xy[1];
+	}
+
+	double yaw_sin = std::sin(-ref_yaw);
+	double yaw_cos = std::cos(-ref_yaw);
+
+	for (int i = 0; i < NUMBER_OF_ROUGH_POINTS; i++) {
+		double shift_x = rough_x[i] - ref_x;
+		double shift_y = rough_y[i] - ref_y;
+		rough_x[i] = shift_x * yaw_cos - shift_y * yaw_sin;
+		rough_y[i] = shift_x * yaw_sin + shift_y * yaw_cos;
+	}
+
+	tk::spline spline;
+	spline.set_points(rough_x, rough_y);
+
+	for (int i = 0; i < prev_size; i++) {
+		next_x_vals[i] = previous_path_x[i];
+		next_y_vals[i] = previous_path_y[i];
+	}
+
+	yaw_sin = std::sin(ref_yaw);
+	yaw_cos = std::cos(ref_yaw);
+
+	for (int i = 0; i < next_x_vals.size() - prev_size; i++) {
+		double x_point = (i + 1) * smooth_step;
+		double y_point = spline(x_point);
+
+		double x_ref = x_point;
+
+		x_point = x_ref * yaw_cos - y_point * yaw_sin;
+		y_point = x_ref * yaw_sin + y_point * yaw_cos;
+		x_point += ref_x;
+		y_point += ref_y;
+
+		next_x_vals[prev_size + i] = x_point;
+		next_y_vals[prev_size + i] = y_point;
+	}     
 }
 
 int main() {
   uWS::Hub h;
 
-  // Load up map values for waypoint's x,y,s and d normalized normal vectors
-  vector<double> map_waypoints_x;
-  vector<double> map_waypoints_y;
-  vector<double> map_waypoints_s;
-  vector<double> map_waypoints_dx;
-  vector<double> map_waypoints_dy;
-
   // Waypoint map to read from
-  string map_file_ = "../data/highway_map.csv";
+  std::string map_file_ = "../data/highway_map.csv";
   // The max s value before wrapping around the track back to 0
-  double max_s = 6945.554;
 
-  ifstream in_map_(map_file_.c_str(), ifstream::in);
+  std::ifstream in_map_(map_file_.c_str(), std::ifstream::in);
 
-  string line;
+  std::string line;
   while (getline(in_map_, line)) {
-  	istringstream iss(line);
+  	std::istringstream iss(line);
   	double x;
   	double y;
   	float s;
@@ -200,7 +393,9 @@ int main() {
   	map_waypoints_dy.push_back(d_y);
   }
 
-  h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+	CarStatus car_status;
+
+  h.onMessage([&car_status](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -214,36 +409,49 @@ int main() {
       if (s != "") {
         auto j = json::parse(s);
         
-        string event = j[0].get<string>();
+        std::string event = j[0].get<std::string>();
         
         if (event == "telemetry") {
           // j[1] is the data JSON object
           
         	// Main car's localization Data
-          	double car_x = j[1]["x"];
-          	double car_y = j[1]["y"];
-          	double car_s = j[1]["s"];
-          	double car_d = j[1]["d"];
-          	double car_yaw = j[1]["yaw"];
-          	double car_speed = j[1]["speed"];
+          	car_status.x = j[1]["x"];
+          	car_status.y = j[1]["y"];
+          	car_status.s = j[1]["s"];
+          	car_status.d = j[1]["d"];
+          	car_status.yaw = j[1]["yaw"];
+          	car_status.speed = j[1]["speed"];
 
           	// Previous path data given to the Planner
-          	auto previous_path_x = j[1]["previous_path_x"];
-          	auto previous_path_y = j[1]["previous_path_y"];
+          	std::vector<double> previous_path_x = j[1]["previous_path_x"];
+          	std::vector<double> previous_path_y = j[1]["previous_path_y"];
           	// Previous path's end s and d values 
           	double end_path_s = j[1]["end_path_s"];
           	double end_path_d = j[1]["end_path_d"];
 
           	// Sensor Fusion Data, a list of all other cars on the same side of the road.
-          	auto sensor_fusion = j[1]["sensor_fusion"];
+          	std::vector<std::vector<double>> sensor_fusion = j[1]["sensor_fusion"];
 
-          	json msgJson;
+						double braking_value = getBrakingValue(car_status, sensor_fusion);
+						bool car_in_front = braking_value > 0;
 
-          	vector<double> next_x_vals;
-          	vector<double> next_y_vals;
+            if (car_in_front) {
+                braking_value = braking_value > MAX_SPEED_DIFF_PER_STEP ? MAX_SPEED_DIFF_PER_STEP : braking_value;
+                car_status.desired_velocity_mph -= braking_value;
+            }
+            // Don't use car_status.speed, it lags behind and will cause desired velocity to get too high
+            else if (car_status.desired_velocity_mph < TARGET_VELOCITY_MPH) {
+                car_status.desired_velocity_mph += MAX_SPEED_DIFF_PER_STEP;
+            }
 
+						performAction(car_status, car_in_front, sensor_fusion);
 
-          	// TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
+          	std::vector<double> next_x_vals(NUMBER_OF_PATH_POINTS);
+          	std::vector<double> next_y_vals(NUMBER_OF_PATH_POINTS);
+
+						calculateNextPoints(car_status, previous_path_x, previous_path_y, next_x_vals, next_y_vals);
+
+						json msgJson;
           	msgJson["next_x"] = next_x_vals;
           	msgJson["next_y"] = next_y_vals;
 
